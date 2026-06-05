@@ -1,0 +1,6 @@
+gradio>=4.0.0
+numpy
+opencv-python
+opencv-contrib-python
+Pillow
+onnxruntime
