@@ -50,6 +50,32 @@ def exercise(url, folder, use_model=False):
         assert '已跳过' not in processed[3], processed[3]
     print('PASS: upload, zero identity, H/S/V processing, alpha, PNG metadata and downloads',flush=True)
     print(processed[3],flush=True)
+    # Exercise the new primary workflow through the actual Gradio API too.
+    generated = client.predict([handle_file(str(path))], ['texture', 'balanced'], 2026, False,
+                               32, 0.95, 1, api_name='/lab_generate')
+    experiment_id = generated[0]['value']
+    bundle = Path(generated[2][0])
+    import csv
+    import io
+    import zipfile
+    with zipfile.ZipFile(bundle) as archive:
+        manifest = json.loads(archive.read('manifest.json'))
+        assert len(manifest['rows']) == 4
+        entries = list(csv.DictReader(io.StringIO(archive.read('scores.csv').decode('utf-8-sig'))))
+    scores = folder / 'scores.csv'
+    with scores.open('w', encoding='utf-8-sig', newline='') as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(entries[0]))
+        writer.writeheader()
+        for entry in entries:
+            entry['hive_ai_percent'] = '99' if entry['id'].endswith(('uploaded', 'control')) else '20'
+            writer.writerow(entry)
+    # Synthetic scores verify plumbing only; these are not measurements from Hive.
+    imported = client.predict(experiment_id, handle_file(str(scores)), 'synthetic smoke test',
+                              20, 0.8, 1, api_name='/lab_import_scores')
+    assert '1 张原图' in imported[2]
+    preview = client.predict(experiment_id, '01_texture', api_name='/lab_compare')
+    assert 'result' in json.loads(preview)
+    print('PASS: lab generation, ZIP/CSV export, synthetic score import, ranking and comparison', flush=True)
 
 
 def main():
@@ -57,6 +83,7 @@ def main():
     target=parser.add_mutually_exclusive_group(required=True)
     target.add_argument('--url')
     target.add_argument('--exe',type=Path)
+    target.add_argument('--source',type=Path,help='Start a Python launcher with the active interpreter')
     parser.add_argument('--model',type=Path,help='Optional real model smoke test')
     args=parser.parse_args()
     process=None
@@ -65,13 +92,14 @@ def main():
         folder=Path(name)
         with open(folder/'server.log','w',encoding='utf-8') as log:
             try:
-                if args.exe:
+                if args.exe or args.source:
                     with socket.socket() as sock:
                         sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
                     url=f'http://127.0.0.1:{port}'
                     env=dict(os.environ,PYTHONUTF8='1',GRADIO_ANALYTICS_ENABLED='False',DOISH_DATA_DIR=str(folder/'data'))
                     if args.model: env['DOISH_MODEL_PATH']=str(args.model.resolve())
-                    process=subprocess.Popen([str(args.exe.resolve()),'--no-browser','--port',str(port)],stdout=log,stderr=log,env=env,
+                    command = [str(args.exe.resolve())] if args.exe else [sys.executable, str(args.source.resolve())]
+                    process=subprocess.Popen([*command,'--no-browser','--port',str(port)],stdout=log,stderr=log,env=env,
                                              creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
                     deadline=time.monotonic()+60
                     opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))

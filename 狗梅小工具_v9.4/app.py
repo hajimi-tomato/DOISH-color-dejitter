@@ -77,7 +77,7 @@ def process_image(path, *values):
         raise gr.Error(str(exc)) from exc
 
 
-def build_app():
+def build_color_app():
     store = PresetStore()
     try:
         names = list(store.all())
@@ -180,8 +180,24 @@ def build_app():
     return demo
 
 
+def build_app():
+    from hive_lab.ui import build_lab
+    # Construct outside the parent context: nested Blocks otherwise auto-render
+    # once on exit and a second time on the explicit render() call.
+    lab_ui = build_lab()
+    color_ui = build_color_app()
+    with gr.Blocks(title='DOISH Image Lab', analytics_enabled=False, delete_cache=(3600, 86400)) as demo:
+        gr.Markdown('# DOISH Image Lab\n以实测结果选择处理方案。')
+        with gr.Tab('Hive 实测与处理'):
+            lab_ui.render()
+        with gr.Tab('DOISH 色彩去抖'):
+            color_ui.render()
+    demo.queue(default_concurrency_limit=1, max_size=16)
+    return demo
+
+
 def main(open_browser=False):
-    parser = argparse.ArgumentParser(description='狗梅小工具 · 本机色彩去抖动')
+    parser = argparse.ArgumentParser(description='DOISH Image Lab · 图像处理与 Hive 实测')
     parser.add_argument('--port', type=int, default=7860)
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--no-browser', action='store_true')

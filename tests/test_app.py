@@ -47,3 +47,7 @@ def test_app_builds_with_all_documented_controls(application):
     demo=application.build_app()
     labels={getattr(block,'label',None) for block in demo.blocks.values()}
     assert {'预设配置','处理状态','色度修正比例','亮度 / 背景修正比例','分割模型'} <= labels
+    def layout_ids(node):
+        return [node['id']] + [item for child in node.get('children', []) for item in layout_ids(child)]
+    ids = layout_ids(demo.config['layout'])
+    assert len(ids) == len(set(ids)), 'Tabs must not render nested applications twice'
