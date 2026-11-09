@@ -1,13 +1,11 @@
-#!/bin/bash
-# 狗梅小工具 — 一键启动脚本
-# 运行前请确保已安装依赖：pip install -r requirements.txt
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR"
-
-echo "🐶 启动狗梅小工具..."
-echo "📌 访问地址：http://localhost:7860"
-echo "   按 Ctrl+C 停止"
-echo ""
-
-python3 app.py
+#!/usr/bin/env bash
+set -euo pipefail
+cd -- "$(dirname -- "$0")"
+if [[ ! -x .venv/bin/python ]]; then
+  python3 -m venv .venv
+fi
+if [[ ! -f .venv/doish-ready-v1 ]]; then
+  .venv/bin/python -m pip install -r requirements.txt
+  touch .venv/doish-ready-v1
+fi
+exec .venv/bin/python launcher.py "$@"

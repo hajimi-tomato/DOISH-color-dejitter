@@ -1,0 +1,16 @@
+<div class="viewer-toolbar">
+  <strong>前后对比</strong><span class="zoom-label">100%</span>
+  <button type="button" class="reset-view">适应窗口</button>
+</div>
+<div class="viewport" tabindex="0" aria-label="图片对比。滚轮缩放，拖动平移，双击复位">
+  <canvas></canvas><div class="empty">上传或粘贴一张图片开始</div>
+  <span class="tag original">原图</span><span class="tag result">结果</span>
+</div>
+<label class="split-control">分割位置 <input class="split" aria-label="分割位置" type="range" min="0" max="100" value="50"></label>
+<p class="viewer-hint">滚轮缩放 · 拖动平移 · 双击复位。预览最长边 1600 px，导出保留原尺寸。</p>
+<details class="preview-settings"><summary>HSB 观察工具 · 只改变预览</summary>
+  <label>色相偏移 <output class="h-val">0°</output><input class="hue" aria-label="预览色相偏移" type="range" min="-180" max="180" value="0"></label>
+  <label>饱和度 <output class="s-val">100%</output><input class="saturation" aria-label="预览饱和度" type="range" min="0" max="400" value="100"></label>
+  <label>明度 <output class="b-val">100%</output><input class="brightness" aria-label="预览明度" type="range" min="0" max="200" value="100"></label>
+  <button type="button" class="reset-hsb">重置 HSB</button>
+</details>

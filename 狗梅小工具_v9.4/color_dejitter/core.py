@@ -1,227 +1,209 @@
-"""
-Color De-Jitter Core Algorithm
-色彩去抖动核心算法 v9.4
-
-v9.4 anime-seg 分割 + NL-Means + edgePreservingFilter：
-- 使用 anime-segmentation 模型（ONNX）做前景/背景分割
-- 背景区域：色度统一替换为区域均值（真正的纯色）
-- 前景区域：NL-Means 色度降噪 + edgePreservingFilter 保边平滑
-- 分割通过 subprocess 调用系统 Python 3.9 + onnxruntime（因 Python 3.14 不支持 onnxruntime）
-"""
+"""Conservative Lab denoising. Public strengths are fractions (0..1)."""
+from dataclasses import asdict, dataclass
+from typing import Callable, Optional, Tuple
+import warnings
 
 import cv2
 import numpy as np
-import subprocess
-import tempfile
-import os
-from typing import Tuple
 
 
-# ─────────────────────────────────────────────────────────────
-# anime-seg 分割
-# ─────────────────────────────────────────────────────────────
+@dataclass(frozen=True)
+class Settings:
+    overall_strength: float = 0.75
+    h_smooth_radius: int = 15
+    h_denoise_threshold: float = 8.0
+    h_denoise_strength: float = 0.8
+    h_use_soft_threshold: bool = True
+    s_enabled: bool = False
+    s_smooth_radius: int = 15
+    s_denoise_threshold: float = 0.05
+    s_denoise_strength: float = 0.8
+    s_use_soft_threshold: bool = True
+    v_enabled: bool = False
+    v_smooth_radius: int = 15
+    v_denoise_threshold: float = 0.05
+    v_denoise_strength: float = 0.5
+    v_use_soft_threshold: bool = True
+    edge_protection: float = 50.0
+    low_sat_skip: float = 0.1
+    background_enabled: bool = True
 
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_SEGMENT_SCRIPT = os.path.join(_SCRIPT_DIR, "segment.py")
-_SYSTEM_PYTHON = "/usr/bin/python3"
+    def validated(self):
+        limits = {
+            'overall_strength': (0, 1), 'h_smooth_radius': (1, 30),
+            'h_denoise_threshold': (0, 40), 'h_denoise_strength': (0, 1),
+            's_smooth_radius': (1, 60), 's_denoise_threshold': (0, 0.4),
+            's_denoise_strength': (0, 1), 'v_smooth_radius': (1, 30),
+            'v_denoise_threshold': (0, 0.2), 'v_denoise_strength': (0, 1),
+            'edge_protection': (0, 200), 'low_sat_skip': (0, 1),
+        }
+        values = asdict(self)
+        for name, (lo, hi) in limits.items():
+            value = values[name]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(value):
+                raise ValueError(f'{name} 必须是有限数值')
+            if not lo <= value <= hi:
+                raise ValueError(f'{name} 必须在 {lo}–{hi} 之间')
+            if name.endswith('_radius'):
+                if int(value) != value:
+                    raise ValueError(f'{name} 必须是整数')
+                values[name] = int(value)
+        for name in values.keys() - limits.keys():
+            if not isinstance(values[name], bool):
+                raise ValueError(f'{name} 必须是布尔值')
+        return Settings(**values)
 
 
-def get_foreground_mask(image_bgr: np.ndarray) -> np.ndarray:
+def _nlm(channel, strength, radius, template, tile=512):
+    """Search/template halos keep tile boundaries out of retained pixels."""
+    if strength <= 0:
+        return channel.copy()
+    channel = np.ascontiguousarray(channel)
+    h, w = channel.shape
+    out = np.empty_like(channel)
+    halo = radius + template // 2
+    for y in range(0, h, tile):
+        for x in range(0, w, tile):
+            y1, x1 = min(y + tile, h), min(x + tile, w)
+            ya, xa = max(0, y - halo), max(0, x - halo)
+            yb, xb = min(h, y1 + halo), min(w, x1 + halo)
+            patch = cv2.fastNlMeansDenoising(channel[ya:yb, xa:xb], None, float(strength), template, radius * 2 + 1)
+            out[y:y1, x:x1] = patch[y-ya:y1-ya, x-xa:x1-xa]
+    return out
+
+
+def _gate(delta, threshold, soft):
+    magnitude = np.linalg.norm(delta, axis=-1, keepdims=True) if delta.ndim == 3 else np.abs(delta)
+    limit = max(float(threshold), 1e-6)
+    if soft:
+        return 1.0 / (1.0 + (magnitude / limit) ** 2)
+    return (magnitude <= limit).astype(np.float32)
+
+
+def _flat_background(lab, background):
+    """Inspect ORIGINAL image cell medians to reject coherent gradients/shadows."""
+    h, w = background.shape
+    if np.count_nonzero(background) < max(64, h * w * 0.005):
+        return False
+    if np.any(np.std(lab[background], axis=0) > [5.0, 4.0, 4.0]):
+        return False
+    medians = []
+    ys, xs = np.linspace(0, h, 7, dtype=int), np.linspace(0, w, 7, dtype=int)
+    for ya, yb in zip(ys[:-1], ys[1:]):
+        for xa, xb in zip(xs[:-1], xs[1:]):
+            selected = lab[ya:yb, xa:xb][background[ya:yb, xa:xb]]
+            if len(selected) >= 16:
+                medians.append(np.median(selected, axis=0))
+    if len(medians) < 4:
+        return False
+    return bool(np.all(np.ptp(medians, axis=0) <= [0.8, 1.0, 1.0]))
+
+
+def get_foreground_mask(image_bgr):
+    from .segment import foreground_mask
+    return foreground_mask(image_bgr)
+
+
+def color_dejitter(
+    image_bgr: np.ndarray,
+    overall_strength: float = 0.75,
+    h_smooth_radius: int = 15,
+    h_denoise_threshold: float = 8.0,
+    h_denoise_strength: float = 0.8,
+    h_use_soft_threshold: bool = True,
+    s_enabled: bool = False,
+    s_smooth_radius: int = 15,
+    s_denoise_threshold: float = 0.05,
+    s_denoise_strength: float = 0.8,
+    s_use_soft_threshold: bool = True,
+    v_enabled: bool = False,
+    v_smooth_radius: int = 15,
+    v_denoise_threshold: float = 0.05,
+    v_denoise_strength: float = 0.5,
+    v_use_soft_threshold: bool = True,
+    edge_protection: float = 50.0,
+    low_sat_skip: float = 0.1,
+    *,
+    background_enabled: bool = True,
+    foreground_mask: Optional[np.ndarray] = None,
+    valid_mask: Optional[np.ndarray] = None,
+    report: Optional[Callable[[str], None]] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return BGR uint8 result and 5x difference without resizing.
+
+    H = a/b NL-Means; S = chroma edge-preserving smoothing;
+    V = L NL-Means and conservative background unification.
+    Without V, L is fixed in float Lab (output gamut/8-bit rounding still apply).
+    Zero overall strength returns bit-exact original pixels.
     """
-    调用 anime-segmentation 获取前景 mask。
-    返回 0~255 的灰度图，255=前景（人物），0=背景。
-    如果分割失败，返回全 255（不分割，全部当前景处理）。
-    """
-    try:
-        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f_in:
-            input_path = f_in.name
-            cv2.imwrite(input_path, image_bgr)
+    if not isinstance(image_bgr, np.ndarray) or image_bgr.dtype != np.uint8 or image_bgr.ndim != 3 or image_bgr.shape[2] != 3 or min(image_bgr.shape[:2]) < 1:
+        raise ValueError('输入必须是非空 H×W×3 的 uint8 BGR 图片')
+    args = locals()
+    st = Settings(**{name: args[name] for name in Settings.__dataclass_fields__}).validated()
+    emit = report or (lambda message: warnings.warn(message, RuntimeWarning, stacklevel=2))
+    if valid_mask is not None and valid_mask.shape != image_bgr.shape[:2]:
+        raise ValueError('有效像素蒙版尺寸不匹配')
+    if st.overall_strength == 0 or not (st.h_denoise_strength * st.h_denoise_threshold or st.s_enabled and st.s_denoise_strength * st.s_denoise_threshold or st.v_enabled and st.v_denoise_strength * st.v_denoise_threshold):
+        return image_bgr.copy(), np.zeros_like(image_bgr)
 
-        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f_out:
-            output_path = f_out.name
+    lab = cv2.cvtColor(image_bgr.astype(np.float32) / 255, cv2.COLOR_BGR2Lab)
+    original_lab = lab.copy()
+    template = min(11, 3 + 2 * int(st.edge_protection / 50))
+    if st.h_denoise_strength > 0 and st.h_denoise_threshold > 0:
+        ab8 = np.clip(np.rint(lab[..., 1:] + 128), 0, 255).astype(np.uint8)
+        den = np.stack([_nlm(ab8[..., i], st.h_denoise_threshold, st.h_smooth_radius, template) for i in range(2)], axis=-1)
+        delta = den.astype(np.float32) - ab8.astype(np.float32)
+        lab[..., 1:] += st.h_denoise_strength * delta * _gate(delta, st.h_denoise_threshold * 2, st.h_use_soft_threshold)
 
-        result = subprocess.run(
-            [_SYSTEM_PYTHON, _SEGMENT_SCRIPT, input_path, output_path],
-            capture_output=True, text=True, timeout=60
-        )
+    if st.s_enabled and st.s_denoise_strength > 0 and st.s_denoise_threshold > 0:
+        bgr = np.clip(np.rint(cv2.cvtColor(lab, cv2.COLOR_Lab2BGR) * 255), 0, 255).astype(np.uint8)
+        smooth = cv2.edgePreservingFilter(bgr, flags=cv2.RECURS_FILTER, sigma_s=float(st.s_smooth_radius * 3), sigma_r=st.s_denoise_threshold * 2)
+        smooth_lab = cv2.cvtColor(smooth.astype(np.float32) / 255, cv2.COLOR_BGR2Lab)
+        delta = smooth_lab[..., 1:] - lab[..., 1:]
+        lab[..., 1:] += st.s_denoise_strength * delta * _gate(delta, st.s_denoise_threshold * 100, st.s_use_soft_threshold)
 
-        if result.returncode == 0 and os.path.exists(output_path):
-            mask = cv2.imread(output_path, cv2.IMREAD_GRAYSCALE)
-            if mask is not None:
-                # 清理
-                os.unlink(input_path)
-                os.unlink(output_path)
-                return mask
+    if st.low_sat_skip > 0:
+        hsv = cv2.cvtColor(image_bgr.astype(np.float32) / 255, cv2.COLOR_BGR2HSV)
+        weight = np.clip((hsv[..., 1] - st.low_sat_skip / 2) / (st.low_sat_skip / 2), 0, 1)
+        weight *= np.clip((hsv[..., 2] - 0.05) / 0.10, 0, 1)
+        lab[..., 1:] = original_lab[..., 1:] + weight[..., None] * (lab[..., 1:] - original_lab[..., 1:])
 
-        # 失败时清理
-        for p in [input_path, output_path]:
-            if os.path.exists(p):
-                os.unlink(p)
-    except Exception:
-        pass
+    if st.v_enabled and st.v_denoise_strength > 0 and st.v_denoise_threshold > 0:
+        l8 = np.clip(np.rint(lab[..., 0] * 2.55), 0, 255).astype(np.uint8)
+        den = _nlm(l8, st.v_denoise_threshold * 255, st.v_smooth_radius, template)
+        delta = (den.astype(np.float32) - l8.astype(np.float32)) / 2.55
+        lab[..., 0] += st.v_denoise_strength * delta * _gate(delta, st.v_denoise_threshold * 200, st.v_use_soft_threshold)
+        if st.background_enabled:
+            if foreground_mask is None:
+                from .segment import SegmentationUnavailable
+                try:
+                    foreground_mask = get_foreground_mask(image_bgr)
+                except SegmentationUnavailable as exc:
+                    emit(f'背景纯色化已跳过：{exc}；H/S/V 降噪仍然生效。')
+            if foreground_mask is not None:
+                if foreground_mask.shape != image_bgr.shape[:2] or not np.isfinite(foreground_mask).all():
+                    raise ValueError('前景蒙版尺寸或数值无效')
+                fg = np.clip(foreground_mask.astype(np.float32) / 255, 0, 1)
+                bg = fg < 0.05
+                if valid_mask is not None:
+                    bg &= valid_mask.astype(bool)
+                if _flat_background(original_lab, bg):
+                    mean = np.mean(original_lab[bg], axis=0)
+                    weight = cv2.GaussianBlur(1-fg, (0, 0), sigmaX=max(0.5, st.v_smooth_radius / 6)) * (1-fg)
+                    if valid_mask is not None:
+                        weight *= valid_mask.astype(np.float32)
+                    delta = mean - lab
+                    gate = _gate(delta, st.v_denoise_threshold * 200, st.v_use_soft_threshold)
+                    lab += st.v_denoise_strength * weight[..., None] * gate * delta
+                    emit('已统一近似纯色背景；前景边缘采用柔和过渡。')
+                else:
+                    emit('背景含渐变、纹理或有效区域不足，已保留背景结构。')
 
-    # 分割失败，返回全前景
-    return np.full(image_bgr.shape[:2], 255, dtype=np.uint8)
-
-
-def color_dejitter(image_bgr: np.ndarray,
-                   overall_strength: float = 0.75,
-                   h_smooth_radius: int = 15,
-                   h_denoise_threshold: float = 8.0,
-                   h_denoise_strength: float = 0.8,
-                   h_use_soft_threshold: bool = True,
-                   s_enabled: bool = False,
-                   s_smooth_radius: int = 15,
-                   s_denoise_threshold: float = 0.05,
-                   s_denoise_strength: float = 0.8,
-                   s_use_soft_threshold: bool = True,
-                   v_enabled: bool = False,
-                   v_smooth_radius: int = 15,
-                   v_denoise_threshold: float = 0.05,
-                   v_denoise_strength: float = 0.5,
-                   v_use_soft_threshold: bool = True,
-                   edge_protection: float = 50.0,
-                   low_sat_skip: float = 0.1,
-                   ) -> Tuple[np.ndarray, np.ndarray]:
-
-    # ── 参数映射 ──────────────────────────────────────────────────
-
-    chroma_h = max(1.0, float(h_denoise_threshold))
-    luma_h = float(h_denoise_strength) / 100.0 * 3.0
-
-    search_size = int(h_smooth_radius) * 2 + 1
-    search_size = max(11, min(search_size, 61))
-    if search_size % 2 == 0:
-        search_size += 1
-
-    template_size = max(3, min(int(edge_protection / 200.0 * 10) + 3, 11))
-    if template_size % 2 == 0:
-        template_size += 1
-
-    # ── 第零步：anime-seg 前景/背景分割 ──────────────────────────
-
-    fg_mask = get_foreground_mask(image_bgr)
-    fg_binary = (fg_mask > 128).astype(np.uint8)
-    bg_binary = 1 - fg_binary
-    has_bg = np.sum(bg_binary) > 100
-
-    # ── 第一步：NL-Means 色度降噪（全图）──────────────────────────
-
-    result_bgr = cv2.fastNlMeansDenoisingColored(
-        image_bgr, None,
-        luma_h, chroma_h,
-        template_size, search_size
-    )
-
-    # ── 第二步：edgePreservingFilter 色度平坦化（可选，前景区域）──
-
-    if s_enabled:
-        sigma_s = float(s_smooth_radius) * 3.0
-        sigma_s = max(10.0, min(sigma_s, 200.0))
-        sigma_r = float(s_denoise_threshold) * 2.0
-        sigma_r = max(0.05, min(sigma_r, 0.8))
-
-        lab = cv2.cvtColor(result_bgr, cv2.COLOR_BGR2Lab).astype(np.float32)
-        L_ch = lab[:, :, 0]
-
-        smoothed_bgr = cv2.edgePreservingFilter(
-            result_bgr,
-            flags=cv2.RECURS_FILTER,
-            sigma_s=sigma_s,
-            sigma_r=sigma_r
-        )
-
-        smoothed_lab = cv2.cvtColor(smoothed_bgr, cv2.COLOR_BGR2Lab).astype(np.float32)
-        lab_out = np.stack([L_ch, smoothed_lab[:, :, 1], smoothed_lab[:, :, 2]], axis=-1)
-        lab_out = np.clip(np.round(lab_out), 0, 255).astype(np.uint8)
-        result_bgr = cv2.cvtColor(lab_out, cv2.COLOR_Lab2BGR)
-
-    # ── 第三步：背景纯色化（仅当背景是近似纯色时）─────────────────
-
-    bg_is_flat = False
-    if has_bg:
-        # 转 Lab
-        lab = cv2.cvtColor(result_bgr, cv2.COLOR_BGR2Lab).astype(np.float32)
-
-        # 背景区域的 L/a/b 均值和标准差
-        bg_mask_bool = bg_binary.astype(bool)
-        bg_mean_L = np.mean(lab[:, :, 0][bg_mask_bool])
-        bg_mean_a = np.mean(lab[:, :, 1][bg_mask_bool])
-        bg_mean_b = np.mean(lab[:, :, 2][bg_mask_bool])
-
-        bg_std_L = np.std(lab[:, :, 0][bg_mask_bool])
-        bg_std_a = np.std(lab[:, :, 1][bg_mask_bool])
-        bg_std_b = np.std(lab[:, :, 2][bg_mask_bool])
-
-        # 判断背景是否接近纯色：三个通道的标准差都很小
-        # 纯色背景的标准差通常 < 10，复杂背景（渐变、纹理）> 15
-        bg_is_flat = (bg_std_L < 12.0) and (bg_std_a < 8.0) and (bg_std_b < 8.0)
-
-        if bg_is_flat:
-            # 纯色背景：L/a/b 全部替换为均值
-            lab[:, :, 0] = np.where(bg_mask_bool, bg_mean_L, lab[:, :, 0])
-            lab[:, :, 1] = np.where(bg_mask_bool, bg_mean_a, lab[:, :, 1])
-            lab[:, :, 2] = np.where(bg_mask_bool, bg_mean_b, lab[:, :, 2])
-
-            # 边缘过渡
-            fg_soft = cv2.GaussianBlur(fg_mask.astype(np.float32), (0, 0), sigmaX=2.0) / 255.0
-            fg_soft_3ch = np.stack([fg_soft] * 3, axis=-1)
-
-            lab_out = np.clip(np.round(lab), 0, 255).astype(np.uint8)
-            bg_unified_bgr = cv2.cvtColor(lab_out, cv2.COLOR_Lab2BGR)
-
-            result_bgr = (
-                result_bgr.astype(np.float32) * fg_soft_3ch +
-                bg_unified_bgr.astype(np.float32) * (1.0 - fg_soft_3ch)
-            )
-            result_bgr = np.clip(np.round(result_bgr), 0, 255).astype(np.uint8)
-        # else: 复杂背景，只做降噪（已在第一二步完成），不做纯色化
-
-    # ── 低饱和度区域保护（只作用于前景）──────────────────────────
-
-    if low_sat_skip > 0:
-        hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
-        s_norm = hsv[:, :, 1].astype(np.float32) / 255.0
-        v_norm_hsv = hsv[:, :, 2].astype(np.float32) / 255.0
-
-        blend_weight = np.clip((s_norm - low_sat_skip * 0.5) / (low_sat_skip * 0.5 + 1e-6), 0, 1)
-        blend_weight = np.where(v_norm_hsv < 0.15, 0.0, blend_weight)
-
-        # 纯色背景区域不做低饱和度保护（已经纯色化了）
-        if has_bg and bg_is_flat:
-            blend_weight = np.where(bg_binary.astype(bool), 1.0, blend_weight)
-
-        blend_weight_3ch = np.stack([blend_weight] * 3, axis=-1).astype(np.float32)
-
-        result_bgr = (
-            result_bgr.astype(np.float32) * blend_weight_3ch +
-            image_bgr.astype(np.float32) * (1.0 - blend_weight_3ch)
-        )
-        result_bgr = np.clip(np.round(result_bgr), 0, 255).astype(np.uint8)
-
-    # ── 整体强度混合（只作用于前景）──────────────────────────────
-
-    if overall_strength < 1.0:
-        blended = cv2.addWeighted(
-            image_bgr, 1.0 - overall_strength,
-            result_bgr, overall_strength,
-            0
-        )
-        # 背景区域保持纯色，不参与混合
-        if has_bg:
-            fg_soft2 = cv2.GaussianBlur(fg_mask.astype(np.float32), (0, 0), sigmaX=2.0) / 255.0
-            fg_soft2_3ch = np.stack([fg_soft2] * 3, axis=-1)
-            result_bgr = (
-                blended.astype(np.float32) * fg_soft2_3ch +
-                result_bgr.astype(np.float32) * (1.0 - fg_soft2_3ch)
-            )
-            result_bgr = np.clip(np.round(result_bgr), 0, 255).astype(np.uint8)
-        else:
-            result_bgr = blended
-
-    # ── 差异图 ───────────────────────────────────────────────────
-
-    diff = cv2.absdiff(image_bgr, result_bgr)
-    diff_amplified = np.clip(diff.astype(np.float32) * 5, 0, 255).astype(np.uint8)
-
-    return result_bgr, diff_amplified
+    candidate = np.clip(np.rint(cv2.cvtColor(lab, cv2.COLOR_Lab2BGR) * 255), 0, 255).astype(np.uint8)
+    unchanged = np.all(lab == original_lab, axis=2)
+    candidate[unchanged] = image_bgr[unchanged]
+    result = cv2.addWeighted(image_bgr, 1-st.overall_strength, candidate, st.overall_strength, 0)
+    if valid_mask is not None:
+        result[~valid_mask.astype(bool)] = image_bgr[~valid_mask.astype(bool)]
+    diff = np.minimum(cv2.absdiff(image_bgr, result).astype(np.uint16) * 5, 255).astype(np.uint8)
+    return result, diff

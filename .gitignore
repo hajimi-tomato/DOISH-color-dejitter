@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+*.spec
+*.onnx
+*.part
+runtime/
+output/
+presets.json
+.DS_Store
+doish-smoke-*/

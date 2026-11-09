@@ -1,0 +1,48 @@
+name: Tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ['3.10', '3.12']
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: '1'
+      GRADIO_ANALYTICS_ENABLED: 'False'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+      - name: Import ONNX runtime and build UI
+        run: python -c "import sys; sys.path.insert(0, '狗梅小工具_v9.4'); import onnxruntime; from app import build_app; assert build_app()"
+  windows-package:
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: '1'
+      GRADIO_ANALYTICS_ENABLED: 'False'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python "狗梅小工具_v9.4/build_windows.py"
+      - name: Exercise packaged application
+        run: python tests/smoke_app.py --exe "狗梅小工具_v9.4/dist/DOISH/DOISH.exe"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DOISH-Windows
+          path: 狗梅小工具_v9.4/dist/DOISH/
+          retention-days: 14
