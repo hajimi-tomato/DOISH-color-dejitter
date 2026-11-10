@@ -10,6 +10,7 @@ dist/
 *.part
 runtime/
 output/
+examples/
 presets.json
 .DS_Store
 doish-smoke-*/

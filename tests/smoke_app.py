@@ -23,7 +23,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'狗梅小工具_v9.4'
 from color_dejitter.core import Settings
 
 
-def exercise(url, folder, use_model=False):
+def exercise(url, folder, use_model=False, use_drunet=False):
     image=np.random.default_rng(17).integers(90,180,(96,128,4),dtype=np.uint8)
     image[...,3]=255
     image[:10,:,3]=0
@@ -76,6 +76,22 @@ def exercise(url, folder, use_model=False):
     preview = client.predict(experiment_id, '01_texture', api_name='/lab_compare')
     assert 'result' in json.loads(preview)
     print('PASS: lab generation, ZIP/CSV export, synthetic score import, ranking and comparison', flush=True)
+    from restoration.core import Settings as DeepSettings
+    from restoration.ui import FIELDS as DEEP_FIELDS
+    deep_settings = DeepSettings(amount=0)
+    deep = client.predict(handle_file(str(path)), None, *[getattr(deep_settings,k) for k in DEEP_FIELDS], api_name='/restoration_process')
+    with Image.open(deep[1][0]) as result:
+        np.testing.assert_array_equal(np.asarray(result), image)
+    if use_drunet:
+        deep_settings = DeepSettings(texture=0, device='cpu')
+        deep = client.predict(handle_file(str(path)), None, *[getattr(deep_settings,k) for k in DEEP_FIELDS], api_name='/restoration_process')
+        with Image.open(deep[1][0]) as result:
+            out=np.asarray(result)
+            assert out.shape==image.shape and np.any(out[:,:,:3]!=image[:,:,:3])
+            np.testing.assert_array_equal(out[...,3],image[...,3])
+            assert result.text['parameters']=='DOISH API smoke test'
+        print('PASS: real DRUNet packaged/source inference, alpha and metadata',flush=True)
+    print('PASS: primary restoration endpoint and exact zero-strength export',flush=True)
 
 
 def main():
@@ -85,6 +101,7 @@ def main():
     target.add_argument('--exe',type=Path)
     target.add_argument('--source',type=Path,help='Start a Python launcher with the active interpreter')
     parser.add_argument('--model',type=Path,help='Optional real model smoke test')
+    parser.add_argument('--drunet',type=Path,help='Optional real DRUNet model smoke test')
     args=parser.parse_args()
     process=None
     # Keep test files inside the workspace when running from CI or the repo.
@@ -98,6 +115,7 @@ def main():
                     url=f'http://127.0.0.1:{port}'
                     env=dict(os.environ,PYTHONUTF8='1',GRADIO_ANALYTICS_ENABLED='False',DOISH_DATA_DIR=str(folder/'data'))
                     if args.model: env['DOISH_MODEL_PATH']=str(args.model.resolve())
+                    if args.drunet: env['DOISH_DRUNET_MODEL']=str(args.drunet.resolve())
                     command = [str(args.exe.resolve())] if args.exe else [sys.executable, str(args.source.resolve())]
                     process=subprocess.Popen([*command,'--no-browser','--port',str(port)],stdout=log,stderr=log,env=env,
                                              creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
@@ -115,7 +133,7 @@ def main():
                             time.sleep(0.5)
                 else:
                     url=args.url
-                exercise(url,folder,use_model=bool(args.model))
+                exercise(url,folder,use_model=bool(args.model),use_drunet=bool(args.drunet))
             except Exception:
                 log.flush()
                 print((folder/'server.log').read_text(encoding='utf-8',errors='replace'),file=sys.stderr)

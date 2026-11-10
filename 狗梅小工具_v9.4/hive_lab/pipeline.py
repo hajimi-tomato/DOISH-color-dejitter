@@ -3,7 +3,7 @@
 These are hypotheses to measure, not a reconstruction of Hive's private model.
 All outputs retain input dimensions; random texture uses a recorded seed.
 """
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import math
 
 import cv2
@@ -20,9 +20,14 @@ class Recipe:
     medium: float = 0.0
     grain: float = 0.0
     doish: bool = False
+    deep: str = ''
 
 
 RECIPES = {
+    'deep_grain': Recipe('DRUNet · 细颗粒清理', deep='grain'),
+    'deep_texture': Recipe('DRUNet-PD · 相关纹理清理', deep='texture'),
+    'deep_flat': Recipe('DRUNet-PD + L0 · 平涂清理', deep='flat'),
+    'deep_hive': Recipe('DRUNet-PD · Hive 实测候选', deep='hive'),
     'doish': Recipe('DOISH 色彩去抖', doish=True),
     'resample': Recipe('重采样单项', scale=0.85),
     'frequency': Recipe('多尺度细节单项', fine=0.4, medium=0.12),
@@ -38,6 +43,9 @@ def process(source, recipe_id, seed=2026, add_doish=False):
     if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= 2**32 - 1:
         raise ValueError('随机种子必须是 0–4294967295 的整数')
     recipe = RECIPES[recipe_id]
+    if recipe.deep:
+        from restoration.core import PRESETS, restore
+        return restore(source, replace(PRESETS[recipe.deep][1], doish=bool(add_doish)))
     original = source.bgr
     bgr = original.copy()
     if recipe.doish or add_doish:

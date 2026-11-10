@@ -11,6 +11,7 @@ def main():
     root = Path(__file__).resolve().parent
     args = [sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir',
             '--name', 'DOISH', '--console', '--add-data', f'{root / "web"};web',
+            '--add-data', f'{root / "third_party"};third_party',
             '--collect-all', 'gradio', '--collect-all', 'gradio_client',
             '--collect-all', 'onnxruntime', '--collect-all', 'groovy',
             '--collect-all', 'safehttpx', '--collect-all', 'hf_gradio',

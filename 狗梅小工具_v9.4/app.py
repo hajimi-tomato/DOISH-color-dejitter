@@ -182,13 +182,17 @@ def build_color_app():
 
 def build_app():
     from hive_lab.ui import build_lab
+    from restoration.ui import build_restoration
     # Construct outside the parent context: nested Blocks otherwise auto-render
     # once on exit and a second time on the explicit render() call.
     lab_ui = build_lab()
     color_ui = build_color_app()
+    restoration_ui = build_restoration()
     with gr.Blocks(title='DOISH Image Lab', analytics_enabled=False, delete_cache=(3600, 86400)) as demo:
-        gr.Markdown('# DOISH Image Lab\n以实测结果选择处理方案。')
-        with gr.Tab('Hive 实测与处理'):
+        gr.Markdown('# DOISH Image Lab · 深度图像清理\n去除多余颗粒和纹理，保留需要的细节。')
+        with gr.Tab('深度降噪与去纹理'):
+            restoration_ui.render()
+        with gr.Tab('Hive 验证'):
             lab_ui.render()
         with gr.Tab('DOISH 色彩去抖'):
             color_ui.render()

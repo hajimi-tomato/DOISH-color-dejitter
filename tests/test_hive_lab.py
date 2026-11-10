@@ -18,6 +18,10 @@ from hive_lab.pipeline import RECIPES, process, quality
 @pytest.fixture
 def sample(tmp_path, monkeypatch):
     monkeypatch.setenv('DOISH_DATA_DIR', str(tmp_path / 'data'))
+    # Pipeline wiring tests are offline. Real DRUNet quality is tested separately.
+    import cv2
+    monkeypatch.setattr('restoration.core.get_predictor', lambda *a, **kw: lambda tensor:
+                        cv2.GaussianBlur(tensor[0,:3].transpose(1,2,0),(3,3),0.7).transpose(2,0,1)[None])
     image = np.random.default_rng(27).integers(40, 210, (32, 48, 4), dtype=np.uint8)
     image[..., 3] = 255
     image[:2, :, 3] = 0

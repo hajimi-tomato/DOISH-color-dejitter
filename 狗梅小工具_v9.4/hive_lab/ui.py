@@ -58,11 +58,11 @@ def build_lab():
             with gr.Column(scale=4):
                 files = gr.File(file_count='multiple', file_types=['image'], type='filepath', label='输入图片 · 最多 4 张，总计 3200 万像素')
                 recipes = gr.CheckboxGroup([(r.label, key) for key, r in RECIPES.items()],
-                                          value=['doish', 'resample', 'balanced', 'strong'], label='候选处理方案')
+                                          value=['deep_grain', 'deep_texture', 'deep_hive'], label='候选处理方案')
                 extra = gr.Checkbox(False, label='组合前额外执行 DOISH 色彩去抖')
                 seed = gr.Number(value=2026, precision=0, minimum=0, maximum=2**32 - 1, label='颗粒随机种子 · 相同种子可复现')
                 create = gr.Button('生成实验与测试包', variant='primary')
-                gr.Markdown('每张输入额外包含上传原文件、统一 PNG 对照。所有候选保持原尺寸；较强处理可能损失细节。')
+                gr.Markdown('深度候选需先在主标签下载 DRUNet 模型，单张最多 1677 万像素。每张输入额外包含上传原文件、统一 PNG 对照；较强处理可能损失细节。')
                 with gr.Accordion('录入 Hive 网站结果', open=True):
                     gr.Markdown('下载测试包 → 在 [Hive 网站](https://hivedetect.ai/) 分别检测 → 填写 scores.csv 的 AI 百分比 → 导入。请在同一批次测完对应对照。')
                     csv = gr.File(label='填好的 scores.csv', file_types=['.csv'], type='filepath')
@@ -120,7 +120,7 @@ def build_lab():
             except (ValueError, OSError) as exc:
                 raise gr.Error(str(exc)) from exc
 
-        options = {'concurrency_limit': 1, 'concurrency_id': 'lab'}
+        options = {'concurrency_limit': 1, 'concurrency_id': 'deep-processing'}
         create.click(create_run, [files, recipes, seed, extra, *limits], [history, *outputs], api_name='lab_generate', **options)
         history.input(show, [history, *limits], outputs, api_name='lab_open', **options)
         refresh.click(lambda: gr.Dropdown(choices=lab.list_experiments()), outputs=history, api_name=False, **options)

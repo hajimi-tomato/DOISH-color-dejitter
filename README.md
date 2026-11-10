@@ -1,8 +1,10 @@
-# DOISH Image Lab
+# DOISH Image Lab · 深度图像清理
 
-围绕 Hive 实测的本机图像处理工具：生成多种候选，记录原图与处理图的 AI 检测分数，再结合画质门槛筛选结果。原有 DOISH 色彩去抖作为一个独立功能标签和可选前处理保留。
+主功能是 DRUNet 深度降噪、像素重排去相关纹理与 L0 平涂清理，针对生成图中多余的颗粒和细碎纹理。支持边缘保护、低频色彩修正和局部保护画板。核心流程移植自 MIT 许可的 [keepcolor-denoise](https://github.com/juanhanyu/keepcolor-denoise)，原作者声明随代码保留。
 
-**当前没有经真实 Hive 测试验证的通用降分方案。** 新模块提供重采样、多尺度亮度细节调整、可复现颗粒和组合处理；其有效性必须由检测结果验证，不能从滤波强度、像素变化或软件测试通过推导。未测或没有改善时，界面会明确显示。
+Hive 实测与筛选、原 DOISH 色彩去抖保留在辅助标签。[深度清理完整说明、参数与实测](RESTORATION.md)。
+
+**当前没有经真实 Hive 测试验证的通用降分方案。** 新的 Hive 候选使用真实 DRUNet 深度清理；传统重采样、残差调整等作为对照保留。生成图降噪与检测分数下降是两个不同的验收目标，未测或没有改善时会明确显示。
 
 ## Image Lab 主流程
 
@@ -27,7 +29,7 @@ python "狗梅小工具_v9.4/launcher.py"
 
 启动后浏览器访问 <http://127.0.0.1:7860>。Windows 也可双击 `狗梅小工具_v9.4/启动.bat`；macOS/Linux 可运行 `bash 狗梅小工具_v9.4/启动.sh`。这两个脚本首次启动会在工具目录创建独立 `.venv` 并安装依赖。
 
-**普通色度降噪不需要模型，也不需要独立显卡。** 需要背景纯色化时，在「高级设置与模型」点击下载，或执行：
+**主功能需要 DRUNet 模型**，在主标签「降噪模型」下载，约 125 MiB。Windows 可用 DirectML 显卡加速，也支持 CPU；无需 PyTorch/CUDA。原 DOISH 普通色度降噪不需要模型。仅原 DOISH 背景纯色化使用下面的独立分割模型：
 
 ```bash
 python "狗梅小工具_v9.4/download_model.py"
@@ -53,6 +55,7 @@ python "狗梅小工具_v9.4/download_model.py"
 
 ## 文档
 
+- [深度清理：keepcolor 移植、参数、保护与实测](RESTORATION.md)
 - [Image Lab：实验、Hive 对接、分数导入与复验](HIVE_LAB.md)
 - [功能与参数说明](狗梅小工具_v9.4/使用说明.md)
 - [安装、模型、打包与排错](狗梅小工具_v9.4/如何启动.md)
@@ -87,6 +90,8 @@ python "狗梅小工具_v9.4/build_windows.py"  # 在 Windows 上运行
 │   ├── images.py              # 图片、透明通道与色彩管理
 │   └── presets.py             # 内置及持久化自定义预设
 ├── hive_lab/                 # 候选、实验、官方 API、结果筛选与界面
+├── restoration/              # 主功能：DRUNet-PD、L0、边缘/色彩/蒙版保护
+├── third_party/              # 上游署名和 MIT 许可证
 ├── web/                      # 对比、缩放、平移、HSB 预览
 ├── models/                   # 首次下载创建，Git 忽略
 └── runtime/                  # 用户预设及临时结果，Git 忽略

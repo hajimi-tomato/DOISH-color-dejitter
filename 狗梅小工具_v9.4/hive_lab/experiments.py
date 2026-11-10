@@ -85,6 +85,15 @@ def generate(paths, recipes, seed=2026, add_doish=False, progress=None):
     manifest = {'schema': 1, 'version': VERSION, 'id': experiment_id, 'created_at': now(),
                 'seed': seed, 'add_doish': bool(add_doish), 'recipes': {r: asdict(RECIPES[r]) for r in recipes},
                 'rows': [], 'score_history': [], 'errors': []}
+    if any(RECIPES[r].deep for r in recipes):
+        from restoration.core import PRESETS
+        from restoration.model import MODEL_SHA256
+        manifest['drunet_sha256'] = MODEL_SHA256
+        for recipe in recipes:
+            if RECIPES[recipe].deep:
+                settings = asdict(PRESETS[RECIPES[recipe].deep][1])
+                settings['doish'] = bool(add_doish)
+                manifest['recipes'][recipe]['resolved_settings'] = settings
     try:
         for index, path in enumerate(paths, 1):
             source = load_image(path)

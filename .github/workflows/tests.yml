@@ -39,8 +39,10 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements-dev.txt
       - run: python "狗梅小工具_v9.4/build_windows.py"
+      - name: Download hash-verified DRUNet model
+        run: python -c "import sys; sys.path.insert(0, '狗梅小工具_v9.4'); from restoration.model import download; download()"
       - name: Exercise packaged application
-        run: python tests/smoke_app.py --exe "狗梅小工具_v9.4/dist/DOISH/DOISH.exe"
+        run: python tests/smoke_app.py --exe "狗梅小工具_v9.4/dist/DOISH/DOISH.exe" --drunet "狗梅小工具_v9.4/models/drunet_color.onnx"
       - uses: actions/upload-artifact@v4
         with:
           name: DOISH-Windows
